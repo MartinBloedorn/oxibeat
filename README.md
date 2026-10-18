@@ -1,0 +1,78 @@
+# oxibeat
+
+Turns real-time data from a Viatom PC-60FW pulse oximeter (Bluetooth LE) into MIDI and OSC for interactive installations. A Python server talks to the device and serves a web UI that shows the live signal.
+
+## Setup
+
+```
+git clone --recursive https://github.com/MartinBloedorn/oxibeat.git
+```
+
+`--recursive` also fetches `external/viatom_pc60fw`, the reference implementation by [sza2](https://github.com/sza2/viatom_pc60fw) that the device protocol was worked out from (kept for reference and credit; oxibeat doesn't import it).
+
+Then, with Python 3.11, create a virtual environment and install the dependencies. In the author's setup the venv lives one level up, at the root of the `synestechia` workspace that contains `oxibeat`:
+
+```
+py -3.11 -m venv .venv
+.venv\Scripts\python -m pip install -r oxibeat\requirements.txt
+```
+
+## Running
+
+From the `oxibeat` folder, with the venv activated (`..\.venv\Scripts\activate`):
+
+```
+python oxibeat.py
+```
+
+This opens the UI (http://localhost:8080/) in a browser tab. Ctrl+C disconnects from the device and stops the server.
+
+The server keeps scanning for the oximeter and connects whenever it shows up. The device switches itself off a few seconds after the finger is removed; the server notices (on the disconnect event, or after 5 s without data) and goes back to scanning.
+
+| Option | |
+|---|---|
+| `--port 8080` / `--host 127.0.0.1` | where the UI is served; use `--host 0.0.0.0` to reach it from other machines |
+| `--name OxySmart` | only connect to devices whose BLE name starts with this (by default, anything named PC-60F… / OxySmart… or advertising the Nordic UART service) |
+| `--address XX:XX:...` | connect only to this device |
+| `--simulate` | synthetic pulse signal, for working without the oximeter |
+| `--detection device` | beat detection to start with: `waveform` (default) or `device`; also switchable in the UI |
+| `--no-browser` | don't open a browser tab |
+| `-v` | debug logging |
+
+## UI
+
+- **Transport bar:** light/dark toggle (dark by default; the choice is remembered in the browser), play/pause (also the Space key), the device connection state, and SpO₂, pulse rate and perfusion index as shown on the device's display. Pausing is server-side: it stops the data going to every open page (and later MIDI/OSC), not just the one where you clicked.
+- **Menu (left):** settings. **Detection type** picks how beats are found (shared by all open pages):
+  - *Device built-in* uses the beat flag the oximeter puts in its waveform.
+  - *Waveform analysis* runs oxibeat's own detector on the waveform and marks the systolic peak, the dicrotic notch and the diastolic peak of every beat. See below.
+- **MIDI output (left menu):** pick an output port (↻ re-lists the system's ports), Connect/Disconnect, and the channel everything is sent on.
+  - *Control change → Waveform*: sends the waveform as a control change on the chosen CC number. Like the graph, it is buffered ~0.4 s to even out Bluetooth's bursts and interpolated between samples, so it moves smoothly (~100 updates/s, typically 1 step at a time) instead of in jumps.
+  - *Notes*: a note for each systolic peak, dicrotic notch and diastolic peak, each with its own on/off and note number. In *Device built-in* mode only the systolic note is available; it's played by the device's beat flag.
+    - *Fixed velocity* (on by default, 100); when off, the velocity is the pulse rate in bpm (capped at 127).
+    - *Length* 1/4, 1/8, 1/16 or 1/32 of a note at the current pulse rate (a quarter note is one beat), e.g. 1/16 at 72 bpm = 208 ms.
+    - The pulse rate is the device's (`RATE` in the transport bar); when it has none or an implausible one (outside 20–300 bpm), 120 bpm is used.
+  - Nothing is sent while paused.
+- **Settings are kept in the browser** (localStorage): detection type, MIDI port, channel, CC and notes. The server holds the live settings for all pages but forgets them when it restarts; a page hands its saved copy back to the server whenever it connects, including reconnecting the saved MIDI port if it's available.
+- **Graph:** the pulse waveform, scrolling right to left, with a vertical line at every detected mark (legend top left).
+
+## Waveform analysis
+
+`backend/detection.py`, run on the server as the samples arrive (50 Hz):
+
+1. **Systolic peak:** Elgendi et al.'s two-moving-average method (PLoS ONE 2013), as in NeuroKit2: band-pass 0.5–8 Hz, square the positive part, and find the stretches where a 111 ms average exceeds a 667 ms average plus an offset; the waveform's maximum there is the peak. The long average trails instead of being centred, which cuts the delay to about 0.2 s at no measurable cost in accuracy.
+2. **Dicrotic notch and diastolic peak**, along the lines of pyPPG (Goda, Charlton & Behar 2024), on a Savitzky–Golay smoothed beat. If the pulse dips after the systolic peak, the dip is the notch and the next maximum is the diastolic peak. If there's only a shoulder (typical for fingertips, older or stiffer arteries), the notch is the "e" wave of the second derivative and the diastolic peak is where the down-slope is flattest (first-derivative maximum).
+
+The notch and diastolic peak can only be judged once the down-slope has been seen, so they're reported about 0.6 beat intervals after the systolic peak (roughly 0.3–0.6 s after they happen); their marks carry the sample they belong to, so the graph shows them in the right place.
+
+## Code
+
+- `oxibeat.py` is the command-line entry point.
+- `backend/protocol.py` parses the device's packets (format described in `external/viatom_pc60fw/README.md` and `doc/Device.md`; bit 7 of a waveform sample is the beat flag).
+- `backend/device.py` handles the BLE scan / connect / reconnect loop (using [bleak](https://github.com/hbldh/bleak)).
+- `backend/detection.py` holds the beat detectors.
+- `backend/midi.py` is the MIDI output ([mido](https://mido.readthedocs.io) with python-rtmidi).
+- `backend/server.py` serves `web/` and relays data to pages over a WebSocket at `/ws`; the message format is at the top of that file.
+- `web/` is the UI: plain HTML/CSS/JS, no build step.
+- `tools/` has scripts to record the device, replay recordings through the detector, score it on synthetic data, and screenshot the UI; `data/recordings/` has real recordings.
+
+Design notes, findings about the device, the detection research and results, and the current status are in [doc/](doc/README.md).

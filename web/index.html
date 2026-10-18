@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>oxibeat</title>
+  <script>
+    // set the theme before the first paint; dark unless the user picked light
+    try { document.documentElement.dataset.theme = localStorage.getItem("oxibeat.theme") || "dark"; }
+    catch { document.documentElement.dataset.theme = "dark"; }
+  </script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="transport">
+    <button id="theme" class="theme-btn" type="button">
+      <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+    </button>
+    <span class="brand">oxibeat</span>
+
+    <button id="play" class="play" type="button" title="Play / pause (Space)" aria-label="Pause">
+      <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+      <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>
+    </button>
+
+    <div id="link" class="link" data-state="offline" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="link-label">Connecting to server…</span>
+    </div>
+
+    <div class="vitals">
+      <div class="stat" title="Oxygen saturation">
+        <span class="stat-label">SpO₂</span>
+        <span class="stat-value"><span id="spo2">–</span><span class="unit">%</span></span>
+      </div>
+      <div class="stat" title="Pulse rate">
+        <span class="stat-label">Rate</span>
+        <span class="stat-value"><span id="pr">–</span><span class="unit">bpm</span></span>
+      </div>
+      <div class="stat" title="Perfusion index">
+        <span class="stat-label">PI</span>
+        <span class="stat-value"><span id="pi">–</span><span class="unit">%</span></span>
+      </div>
+      <span id="beat" class="beat" aria-hidden="true" title="Pulse"></span>
+    </div>
+  </header>
+
+  <main class="main">
+    <nav class="menu" aria-label="Settings">
+      <section class="menu-section">
+        <label class="field">
+          <span class="field-label">Detection type</span>
+          <select id="detection"></select>
+        </label>
+      </section>
+
+      <section class="menu-section" aria-labelledby="midi-title">
+        <h2 id="midi-title" class="menu-title">MIDI output</h2>
+
+        <div class="field">
+          <label class="field-label" for="midi-port">Port</label>
+          <div class="row">
+            <select id="midi-port"></select>
+            <button id="midi-refresh" class="icon-btn" type="button" title="Refresh port list" aria-label="Refresh port list">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>
+            </button>
+          </div>
+          <button id="midi-connect" class="btn" type="button">Connect</button>
+          <span id="midi-status" class="hint" role="status"></span>
+        </div>
+
+        <label class="field">
+          <span class="field-label">Channel</span>
+          <select id="midi-channel"></select>
+        </label>
+
+        <div class="group">
+          <span class="group-title">Control change</span>
+          <div class="note-row">
+            <label class="check"><input type="checkbox" id="cc-enabled"> Waveform</label>
+            <input type="number" id="cc-number" min="0" max="127" aria-label="Waveform CC number">
+            <span class="note-name">CC</span>
+          </div>
+          <span class="hint">Smoothed like the graph, about 0.4 s behind the device.</span>
+        </div>
+
+        <div class="group">
+          <span class="group-title">Notes</span>
+          <div class="note-row" data-kind="systolic">
+            <label class="check"><input type="checkbox"> Systolic peak</label>
+            <input type="number" min="0" max="127" aria-label="Systolic peak note">
+            <span class="note-name"></span>
+          </div>
+          <div class="note-row" data-kind="notch">
+            <label class="check"><input type="checkbox"> Dicrotic notch</label>
+            <input type="number" min="0" max="127" aria-label="Dicrotic notch note">
+            <span class="note-name"></span>
+          </div>
+          <div class="note-row" data-kind="diastolic">
+            <label class="check"><input type="checkbox"> Diastolic peak</label>
+            <input type="number" min="0" max="127" aria-label="Diastolic peak note">
+            <span class="note-name"></span>
+          </div>
+          <div class="note-row">
+            <label class="check"><input type="checkbox" id="velocity-fixed"> Fixed velocity</label>
+            <input type="number" id="velocity-value" min="1" max="127" aria-label="Fixed velocity">
+            <span></span>
+          </div>
+          <div class="note-row">
+            <label class="inline" for="note-length">Length</label>
+            <select id="note-length" class="span-2">
+              <option value="1/4">1/4</option>
+              <option value="1/8">1/8</option>
+              <option value="1/16">1/16</option>
+              <option value="1/32">1/32</option>
+            </select>
+          </div>
+          <span id="notes-hint" class="hint"></span>
+        </div>
+      </section>
+    </nav>
+
+    <section class="graph" aria-label="Pulse waveform">
+      <canvas id="wave"></canvas>
+      <div id="legend" class="legend" aria-label="Marks"></div>
+      <div id="overlay" class="overlay">Waiting for oximeter</div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

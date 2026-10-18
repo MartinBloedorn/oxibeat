@@ -1,0 +1,3 @@
+[submodule "external/viatom_pc60fw"]
+	path = external/viatom_pc60fw
+	url = https://github.com/sza2/viatom_pc60fw.git
