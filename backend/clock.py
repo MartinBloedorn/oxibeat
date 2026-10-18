@@ -21,9 +21,16 @@ A phase-locked loop keeps it in step, updated once per heartbeat:
   missed one just makes a longer interval, which the loop handles anyway. When the
   recent intervals say the tempo jumped (or the "double detections" keep coming),
   the loop locks onto the pulse afresh rather than drift towards it.
-- Without heartbeats the clock keeps its last tempo and phase. With Start/Stop on,
-  it stops after STOP_AFTER and starts again (on a heartbeat) once it has locked
-  again; with Start/Stop off it runs on as long as it's enabled.
+- Without heartbeats the clock keeps its last tempo and phase.
+
+Start and Stop go out whenever the clock starts or stops ticking, and only then:
+- Auto start/stop on: it runs while the pulse is locked, so Start (on a heartbeat)
+  comes once two heartbeats have been seen and Stop STOP_AFTER after the pulse is
+  lost; and while playing, of course.
+- Off: it runs whenever playing. Start goes out at once, at the last tempo, and the
+  loop then pulls the beats onto the pulse gradually; without a pulse it keeps its
+  tempo until paused.
+Changing the setting sends something only if that starts or stops the clock.
 """
 
 import asyncio
@@ -122,8 +129,17 @@ class BeatPll:
             self.rate = rate
             self._start_segment(now, rate, 0.0, 0.0)
 
-    def beat(self, t: float, now: float, tau: float):
-        """A heartbeat happened at `t` (reported at `now`)."""
+    def realign(self, now: float):
+        """Moves the phase on to the next whole heartbeat at `now`, so a Start can go out at once."""
+        shift = math.ceil(self.phase(now)) - self.phase(now)
+        self._segments = deque((t0, p0 + shift, rate, slew, until) for t0, p0, rate, slew, until in self._segments)
+
+    def beat(self, t: float, now: float, tau: float, gentle: bool = False):
+        """A heartbeat happened at `t` (reported at `now`).
+
+        `gentle`: the clock is running, so locking afresh shouldn't pull the phase
+        round in one heartbeat; it then corrects the phase at the loop's own pace.
+        """
         if t > now or t < now - HISTORY + 1:
             return
         interval = t - self._last_beat if self._last_beat is not None else None
@@ -132,33 +148,38 @@ class BeatPll:
             interval = None
         if self.locked and t - self.last_trusted > UNLOCK_AFTER:
             self.locked = False
+        a = math.exp(-1 / tau)
+        lock_kp = 1 - a * a if gentle else 1.0
         if not self.locked:
             if interval is not None:
-                self._lock(t, now, interval)
+                self._lock(t, now, interval, lock_kp)
             return
         since = t - self.last_trusted
         if since < SPURIOUS / self.rate:
             # too soon after the last heartbeat: a double detection, unless it keeps happening
             self._rejected += 1
             if self._rejected >= RELOCK_AFTER and interval is not None:
-                self._lock(t, now, interval)
+                self._lock(t, now, interval, lock_kp)
             return
         self._rejected = 0
         if since < 2 * SPURIOUS / self.rate:  # not after a missed heartbeat
             self._intervals.append(since)
         typical = sorted(self._intervals)[len(self._intervals) // 2]
-        if len(self._intervals) >= 3 and abs(1 / (typical * self.rate) - 1) > TEMPO_JUMP:
+        recent = list(self._intervals)[-3:]
+        # only for a pulse that is steady at its new tempo; artifacts (finger moving or
+        # coming out) give erratic intervals, whose median is no tempo at all
+        steady = len(recent) == 3 and max(recent) / min(recent) < 1 + TEMPO_JUMP
+        if steady and abs(1 / (typical * self.rate) - 1) > TEMPO_JUMP:
             # the pulse moved further than the loop should follow gradually
-            self._lock(t, now, typical)
+            self._lock(t, now, typical, lock_kp)
             return
-        a = math.exp(-1 / tau)
         error = self._error(t)
         self._correct(t, now, error, 1 - a * a, self.rate * (1 - (1 - a) ** 2 * error))
         self.last_trusted = t
 
-    def _lock(self, t: float, now: float, interval: float):
-        """Locks afresh: the tempo from `interval`, the whole phase error corrected."""
-        self._correct(t, now, _wrap(self._error(t)), 1.0, 1 / interval)
+    def _lock(self, t: float, now: float, interval: float, kp: float):
+        """Locks afresh: the tempo from `interval`, `kp` of the phase error corrected."""
+        self._correct(t, now, _wrap(self._error(t)), kp, 1 / interval)
         self._intervals.clear()
         self._intervals.append(interval)
         self._rejected = 0
@@ -208,7 +229,7 @@ class MidiClock:
     def __init__(self, midi):
         self._midi = midi
         self.enabled = False
-        self.transport = True  # send Start/Stop; also stops the clock without a pulse
+        self.auto = True  # run (and Start/Stop) with the pulse; off: with play/pause only
         self.sensitivity = 50  # 0..100, see time_constant()
         self.fraction = "1/4"  # note value of one heartbeat
         self._running = True  # the hub's play/pause
@@ -225,7 +246,7 @@ class MidiClock:
     def state(self) -> dict:
         return {
             "enabled": self.enabled,
-            "transport": self.transport,
+            "auto": self.auto,
             "sensitivity": self.sensitivity,
             "fraction": self.fraction,
         }
@@ -234,10 +255,8 @@ class MidiClock:
         with self._lock:
             if "enabled" in settings:
                 self.enabled = bool(settings["enabled"])
-            if "transport" in settings and bool(settings["transport"]) != self.transport:
-                # restart, so a receiver gets its Start (or its last Stop) on the new terms
-                self._halt()
-                self.transport = bool(settings["transport"])
+            if "auto" in settings:
+                self.auto = bool(settings["auto"])
             if "sensitivity" in settings:
                 try:
                     self.sensitivity = max(0, min(100, int(settings["sensitivity"])))
@@ -258,7 +277,7 @@ class MidiClock:
         with self._lock:
             t = self._times.time(n)
             if t is not None:
-                self._pll.beat(t, time.perf_counter(), time_constant(self.sensitivity))
+                self._pll.beat(t, time.perf_counter(), time_constant(self.sensitivity), gentle=self._ticking)
 
     def pulse_rate(self, bpm: float):
         with self._lock:
@@ -283,12 +302,12 @@ class MidiClock:
         self.halt()
 
     def halt(self):
-        """Stops ticking now (sending Stop if Start/Stop is on), e.g. before the port closes."""
+        """Stops ticking now (with a Stop), e.g. before the port closes."""
         with self._lock:
             self._halt()
 
     def _halt(self):
-        if self._ticking and self.transport and not self._start_pending:
+        if self._ticking and not self._start_pending:
             self._midi.send_realtime("stop")
         self._ticking = False
         self._start_pending = False
@@ -304,21 +323,20 @@ class MidiClock:
         """Sends what is due; returns how long to sleep."""
         pll = self._pll
         wanted = self.enabled and self._running and self._midi.is_open
-        if wanted and self.transport:
+        if wanted and self.auto:
             wanted = pll.locked and now - pll.last_trusted < STOP_AFTER
         if not wanted:
             self._halt()
             return POLL
         ticks_per_beat = TICKS_PER_QUARTER * FRACTIONS[self.fraction]
         if not self._ticking:
-            self._ticking = True
+            # Start goes out just before the first tick, which is on a beat of the loop
+            self._ticking = self._start_pending = True
             self._ticks_per_beat = ticks_per_beat
-            if self.transport:
-                # Start goes out just before the first tick, which falls on a heartbeat
-                self._start_pending = True
-                self._next = math.ceil(pll.phase(now)) * ticks_per_beat
-            else:
-                self._next = math.ceil(pll.phase(now) * ticks_per_beat)
+            if not self.auto:
+                # at once, at the last tempo; the loop then moves the beats onto the pulse
+                pll.realign(now)
+            self._next = math.ceil(pll.phase(now) - 1e-9) * ticks_per_beat
         elif ticks_per_beat != self._ticks_per_beat:
             self._next = math.ceil(pll.phase(now) * ticks_per_beat)
             self._ticks_per_beat = ticks_per_beat

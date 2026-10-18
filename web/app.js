@@ -325,7 +325,7 @@ const midiEls = {
   length: $("note-length"),
   notes: [...document.querySelectorAll(".note-row[data-kind]")],
   clockEnabled: $("clock-enabled"),
-  clockTransport: $("clock-transport"),
+  clockAuto: $("clock-auto"),
   clockFraction: $("clock-fraction"),
   clockSensitivity: $("clock-sensitivity"),
   clockHint: $("clock-hint"),
@@ -392,10 +392,10 @@ function renderMidi() {
 
   const clock = midi.clock;
   midiEls.clockEnabled.checked = clock.enabled;
-  midiEls.clockTransport.checked = clock.transport;
+  midiEls.clockAuto.checked = clock.auto;
   midiEls.clockFraction.value = clock.fraction;
   setValue(midiEls.clockSensitivity, clock.sensitivity);
-  for (const el of [midiEls.clockEnabled, midiEls.clockTransport, midiEls.clockFraction, midiEls.clockSensitivity]) {
+  for (const el of [midiEls.clockEnabled, midiEls.clockAuto, midiEls.clockFraction, midiEls.clockSensitivity]) {
     el.disabled = !live;
   }
   renderClockHint(bpm);
@@ -411,9 +411,9 @@ function renderClockHint(bpm) {
   const parts = [
     `${bpm * perBeat} bpm clock at a ${bpm} bpm pulse`,
     `follows tempo changes within ~${tau < 3 ? tau.toFixed(1) : Math.round(tau)} heartbeats`,
-    clock.transport
-      ? "Start on a heartbeat once locked, Stop 5 s after the pulse is lost"
-      : "keeps the last tempo without a pulse",
+    clock.auto
+      ? "Start on a heartbeat once the pulse is found, Stop 5 s after it is lost"
+      : "Start/Stop with play/pause only; keeps the last tempo without a pulse",
   ];
   midiEls.clockHint.textContent = `${parts.join("; ")}.`;
 }
@@ -444,7 +444,7 @@ midiEls.velocityValue.addEventListener("change", () => {
 });
 midiEls.length.addEventListener("change", () => send({ type: "midi_set", length: midiEls.length.value }));
 midiEls.clockEnabled.addEventListener("change", () => send({ type: "midi_set", clock: { enabled: midiEls.clockEnabled.checked } }));
-midiEls.clockTransport.addEventListener("change", () => send({ type: "midi_set", clock: { transport: midiEls.clockTransport.checked } }));
+midiEls.clockAuto.addEventListener("change", () => send({ type: "midi_set", clock: { auto: midiEls.clockAuto.checked } }));
 midiEls.clockFraction.addEventListener("change", () => send({ type: "midi_set", clock: { fraction: midiEls.clockFraction.value } }));
 midiEls.clockSensitivity.addEventListener("input", () => renderClockHint(pulseRate >= 20 && pulseRate <= 300 ? pulseRate : 120));
 midiEls.clockSensitivity.addEventListener("change", () => send({ type: "midi_set", clock: { sensitivity: intValue(midiEls.clockSensitivity) } }));

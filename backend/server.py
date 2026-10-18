@@ -6,7 +6,7 @@ WebSocket messages (JSON), server -> page:
    "midi": {"ports": [name, ...], "port": name or null, "error": str or null, "channel": 1..16,
             "cc": {"enabled", "number"}, "notes": {kind: {"enabled", "note"}, ...},
             "velocity": {"fixed", "value"}, "length": "1/4" | "1/8" | "1/16" | "1/32",
-            "clock": {"enabled", "transport", "sensitivity": 0..100, "fraction": "1/4" | "1/2"}},
+            "clock": {"enabled", "auto", "sensitivity": 0..100, "fraction": "1/4" | "1/2"}},
    "osc": {"host", "port", "prefix", "connected": bool, "error": str or null,
            "wave": {"enabled"}, "events": {kind: {"enabled"}, ...}}}
   {"type": "vitals", "spo2": int, "pr": int, "pi": float}
