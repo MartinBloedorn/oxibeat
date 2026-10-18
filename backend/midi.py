@@ -3,13 +3,18 @@
 Everything goes out on one channel. Settings live here and are shown to the
 pages through `state()`; `update()` takes the same shape (partially) back.
 The waveform arrives already smoothed (see playout.py) through `send_wave()`.
+The MIDI clock (clock.py) sends from its own thread through `send_realtime()`;
+a lock keeps the two from using the port at once.
 """
 
 import asyncio
 import logging
+import threading
 from typing import Callable
 
 import mido
+
+from .clock import MidiClock
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +46,18 @@ class MidiOutput:
         self.length = "1/16"
         self._note_offs: dict[int, asyncio.TimerHandle] = {}
         self._last_cc: int | None = None
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self.clock = MidiClock(self)
+
+    def start(self):
+        """Starts the clock thread; call from the running event loop."""
+        self._loop = asyncio.get_running_loop()
+        self.clock.start()
+
+    @property
+    def is_open(self) -> bool:
+        return self._port is not None
 
     def state(self) -> dict:
         return {
@@ -52,6 +69,7 @@ class MidiOutput:
             "notes": self.notes,
             "velocity": self.velocity,
             "length": self.length,
+            "clock": self.clock.state(),
         }
 
     # --- ports -------------------------------------------------------------
@@ -85,16 +103,19 @@ class MidiOutput:
     def _close_port(self):
         if self._port is None:
             return
+        self.clock.halt()
         self.all_notes_off()
-        try:
-            self._port.close()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self._port.close()
+            except Exception:
+                pass
+            self._port = None
         log.info("MIDI output closed")
-        self._port = None
         self.port_name = None
 
     def close(self):
+        self.clock.close()
         self._close_port()
 
     # --- settings ----------------------------------------------------------
@@ -124,20 +145,44 @@ class MidiOutput:
                 self.notes[kind]["enabled"] = bool(note["enabled"])
             if "note" in note:
                 self.notes[kind]["note"] = _clamp(note["note"], 0, 127, self.notes[kind]["note"])
+        if isinstance(settings.get("clock"), dict):
+            self.clock.update(settings["clock"])
         self._on_change()
 
     # --- output ------------------------------------------------------------
 
     def _send(self, msg: mido.Message):
-        try:
-            self._port.send(msg)
-        except Exception as e:
-            # e.g. a USB interface was unplugged
-            self._port = None
-            self.port_name = None
-            self.error = f"MIDI output failed: {e}"
-            log.warning("%s", self.error)
-            self._on_change()
+        with self._lock:
+            if self._port is None:
+                return
+            try:
+                self._port.send(msg)
+                return
+            except Exception as e:
+                # e.g. a USB interface was unplugged
+                self._port = None
+                error = e
+        self._failed(error)
+
+    def send_realtime(self, kind: str):
+        """Sends a system realtime message ("clock", "start", "stop"); safe from any thread."""
+        with self._lock:
+            if self._port is None:
+                return
+            try:
+                self._port.send(mido.Message(kind))
+                return
+            except Exception as e:
+                self._port = None
+                error = e
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._failed, error)
+
+    def _failed(self, error: Exception):
+        self.port_name = None
+        self.error = f"MIDI output failed: {error}"
+        log.warning("%s", self.error)
+        self._on_change()
 
     def send_wave(self, value: float):
         """The smoothed waveform (0..127); sent as CC when it changes."""

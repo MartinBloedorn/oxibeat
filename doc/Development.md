@@ -5,6 +5,9 @@
 - Windows 10, Python 3.11. The venv is at the **workspace root**: `synestechia/.venv` (shared by the workspace, by the user's choice).
 - Setup: `py -3.11 -m venv .venv` then `.venv\Scripts\python -m pip install -r oxibeat\requirements.txt` (from the workspace root).
 - Bare `python` on this machine may be the Microsoft Store stub; use `..\.venv\Scripts\python` from `oxibeat/`, or activate the venv first.
+- **macOS** (also used since 2026-10-18; Apple Silicon, Homebrew): `python3.11 -m venv .venv`, then `.venv/bin/python -m pip install -r oxibeat/requirements.txt`. It must be 3.11 (or ≤ 3.12) explicitly: Homebrew's bare `python3` is 3.14, for which python-rtmidi 1.5.8 has no wheel, and building it from source fails on macOS (`use of undeclared identifier 'sem_timedwait'` in RtMidi's JACK code). With 3.11 everything installs from wheels.
+- macOS can create **virtual MIDI ports** (`mido.open_input("name", virtual=True)`, or rtmidi's `open_virtual_port`), which makes MIDI testable without a loopback driver: the port shows up in oxibeat's port list. Don't test against the real interfaces on the user's machine (HyLiSe, Scarlett, V61): they may be wired to gear.
+- `tools/screenshot.py` hard-codes Windows Edge; on macOS, set its `EDGE` to `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` from a small wrapper (the DevTools protocol is the same).
 - Git: https://github.com/MartinBloedorn/oxibeat (branch `main`). `external/viatom_pc60fw` is a submodule of [sza2/viatom_pc60fw](https://github.com/sza2/viatom_pc60fw), kept as the reference the protocol work is based on (credit to its author); no oxibeat code imports it. Clone with `--recursive`, or run `git submodule update --init` after cloning.
 
 ## Running
@@ -25,6 +28,7 @@ python oxibeat.py --port 8091 --no-browser -v
 | `record.py <csv> <seconds>` | Record the live waveform + device beat flags. Waits up to 2 min for the device. Can't run alongside `oxibeat.py` (one BLE connection). |
 | `replay.py <csv> [--plot x.html]` | Run the waveform detector over a recording; prints stats, optional plot. |
 | `evaluate_synthetic.py` | Score the detector on synthetic beats with known answers. Run after any detection change. |
+| `clock_sim.py [csv ...]` | Run the MIDI clock's phase-locked loop over the recordings and synthetic pulses (tempo ramp, dropout) at several time constants: phase error, tempo steadiness, relocking. Run after any change to `backend/clock.py`. |
 | `screenshot.py <url> <png>` | Screenshot a page (the live UI or a plot) with headless Edge via the DevTools protocol. |
 
 Recordings are in `data/recordings/` (CSV, one row per sample: `value,flag`). See `Detection.md` for what each contains.

@@ -253,6 +253,9 @@ body {
 .check input { margin: 0; accent-color: var(--wave); }
 .inline { display: flex; align-items: center; gap: 6px; color: var(--text-2); }
 
+.menu input[type="range"] { width: 100%; margin: 0; accent-color: var(--wave); }
+.range-label { display: flex; justify-content: space-between; align-items: baseline; color: var(--text-3); font-size: 11px; }
+
 .note-row { display: grid; grid-template-columns: 1fr 64px 32px; align-items: center; gap: 6px; }
 .note-name { color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
 .note-row .span-2 { grid-column: span 2; }

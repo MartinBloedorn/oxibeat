@@ -118,6 +118,24 @@
           </div>
           <span id="notes-hint" class="hint"></span>
         </div>
+
+        <div class="group">
+          <span class="group-title">Clock</span>
+          <label class="check"><input type="checkbox" id="clock-enabled"> Send clock</label>
+          <label class="check"><input type="checkbox" id="clock-transport"> Start / stop</label>
+          <div class="note-row">
+            <label class="inline" for="clock-fraction">Heartbeat =</label>
+            <select id="clock-fraction" class="span-2">
+              <option value="1/4">1/4 note</option>
+              <option value="1/2">1/2 note</option>
+            </select>
+          </div>
+          <label class="field">
+            <span class="range-label"><span>Smooth</span><span class="field-label">Sensitivity</span><span>Tight</span></span>
+            <input type="range" id="clock-sensitivity" min="0" max="100" step="1">
+          </label>
+          <span id="clock-hint" class="hint"></span>
+        </div>
       </section>
 
       <section class="menu-section" aria-labelledby="osc-title">

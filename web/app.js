@@ -263,11 +263,17 @@ function setRunning(value) {
 
 playBtn.addEventListener("click", () => setRunning(!running));
 detectionEl.addEventListener("change", () => send({ type: "set_detection", detection: detectionEl.value }));
+// Space is play/pause anywhere except where it types or opens a list; on a focused
+// checkbox, button or slider it would otherwise toggle that control instead
+const takesSpace = (el) => el.matches?.('input[type="text"], input[type="number"], select, textarea');
 document.addEventListener("keydown", (e) => {
-  if (e.code === "Space" && !e.repeat && e.target === document.body) {
-    e.preventDefault();
-    setRunning(!running);
-  }
+  if (e.code !== "Space" || takesSpace(e.target)) return;
+  e.preventDefault();
+  if (!e.repeat) setRunning(!running);
+});
+// buttons and checkboxes act on keyup
+document.addEventListener("keyup", (e) => {
+  if (e.code === "Space" && !takesSpace(e.target)) e.preventDefault();
 });
 
 function onStatus(msg) {
@@ -318,6 +324,11 @@ const midiEls = {
   velocityValue: $("velocity-value"),
   length: $("note-length"),
   notes: [...document.querySelectorAll(".note-row[data-kind]")],
+  clockEnabled: $("clock-enabled"),
+  clockTransport: $("clock-transport"),
+  clockFraction: $("clock-fraction"),
+  clockSensitivity: $("clock-sensitivity"),
+  clockHint: $("clock-hint"),
 };
 let midi = null;
 
@@ -378,6 +389,33 @@ function renderMidi() {
   if (!midi.velocity.fixed) parts.push(`velocity ${Math.min(127, bpm)} (the pulse rate)`);
   if (kinds.includes("beat")) parts.push("the device's beat flag plays the systolic note");
   midiEls.notesHint.textContent = `${parts.join("; ")}.`;
+
+  const clock = midi.clock;
+  midiEls.clockEnabled.checked = clock.enabled;
+  midiEls.clockTransport.checked = clock.transport;
+  midiEls.clockFraction.value = clock.fraction;
+  setValue(midiEls.clockSensitivity, clock.sensitivity);
+  for (const el of [midiEls.clockEnabled, midiEls.clockTransport, midiEls.clockFraction, midiEls.clockSensitivity]) {
+    el.disabled = !live;
+  }
+  renderClockHint(bpm);
+}
+
+// same mapping as backend/clock.py's time_constant(): 16 heartbeats at 0, 1.5 at 100
+const clockTau = (sensitivity) => 16 * (1.5 / 16) ** (sensitivity / 100);
+
+function renderClockHint(bpm) {
+  const clock = midi.clock;
+  const perBeat = clock.fraction === "1/2" ? 2 : 1;
+  const tau = clockTau(intValue(midiEls.clockSensitivity));
+  const parts = [
+    `${bpm * perBeat} bpm clock at a ${bpm} bpm pulse`,
+    `follows tempo changes within ~${tau < 3 ? tau.toFixed(1) : Math.round(tau)} heartbeats`,
+    clock.transport
+      ? "Start on a heartbeat once locked, Stop 5 s after the pulse is lost"
+      : "keeps the last tempo without a pulse",
+  ];
+  midiEls.clockHint.textContent = `${parts.join("; ")}.`;
 }
 
 const intValue = (el) => Number.parseInt(el.value, 10);
@@ -405,6 +443,11 @@ midiEls.velocityValue.addEventListener("change", () => {
   else renderMidi();
 });
 midiEls.length.addEventListener("change", () => send({ type: "midi_set", length: midiEls.length.value }));
+midiEls.clockEnabled.addEventListener("change", () => send({ type: "midi_set", clock: { enabled: midiEls.clockEnabled.checked } }));
+midiEls.clockTransport.addEventListener("change", () => send({ type: "midi_set", clock: { transport: midiEls.clockTransport.checked } }));
+midiEls.clockFraction.addEventListener("change", () => send({ type: "midi_set", clock: { fraction: midiEls.clockFraction.value } }));
+midiEls.clockSensitivity.addEventListener("input", () => renderClockHint(pulseRate >= 20 && pulseRate <= 300 ? pulseRate : 120));
+midiEls.clockSensitivity.addEventListener("change", () => send({ type: "midi_set", clock: { sensitivity: intValue(midiEls.clockSensitivity) } }));
 for (const row of midiEls.notes) {
   const kind = row.dataset.kind;
   const [check, number] = row.querySelectorAll("input");
@@ -510,11 +553,11 @@ function saveSettings(patch) {
 
 function syncSettings(msg) {
   if (restored) {
-    const { channel, cc, notes, velocity, length } = msg.midi;
+    const { channel, cc, notes, velocity, length, clock } = msg.midi;
     const { host, port, prefix, wave, events } = msg.osc;
     saveSettings({
       detection: msg.detection,
-      midi: { channel, cc, notes, velocity, length },
+      midi: { channel, cc, notes, velocity, length, clock },
       osc: { host, port, prefix, wave, events },
     });
     return;

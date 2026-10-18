@@ -9,10 +9,11 @@
                     protocol.py)       |  - pause state              - settings menu
                                        |  - broadcast to all pages
                                        |--> backend/playout.py --> midi.py (CC) / osc.py (/data)
-                                       '--> marks -------------> midi.py (notes) / osc.py (events)
+                                       |--> marks -------------> midi.py (notes) / osc.py (events)
+                                       '--> heartbeats --------> clock.py (MIDI clock thread) --> midi.py
 ```
 
-One Python process, one asyncio event loop: the BLE client (bleak), the HTTP server and the WebSocket connections all live in it. No threads.
+One Python process, one asyncio event loop: the BLE client (bleak), the HTTP server and the WebSocket connections all live in it. The one thread besides it is the MIDI clock's (see below), because asyncio's timers are too coarse for evenly spaced clock ticks.
 
 | File | Role |
 |---|---|
@@ -24,6 +25,7 @@ One Python process, one asyncio event loop: the BLE client (bleak), the HTTP ser
 | `backend/playout.py` | `Playout`: smooths the bursty waveform for the outputs (buffer, steady pace, interpolation) |
 | `backend/rate.py` | `effective_bpm()`: the pulse rate the outputs use (device rate, or 120 bpm) |
 | `backend/midi.py` | `MidiOutput`: port handling, MIDI settings, CC and note output |
+| `backend/clock.py` | `MidiClock`: MIDI clock phase-locked to the heartbeats, on its own thread |
 | `backend/osc.py` | `OscOutput`: OSC over UDP, settings, waveform and event messages |
 | `backend/server.py` | `Hub` (state, detection, broadcast) and the aiohttp app |
 | `web/index.html`, `style.css`, `app.js` | The UI; plain files, no build step, no libraries |
@@ -62,6 +64,18 @@ Any `BleakError` / `OSError` / timeout is logged as a warning and the loop conti
 - **Errors**: a port that can't be opened, or that fails while sending (e.g. a USB interface unplugged), is closed and the message is shown under the port selector.
 - **Persistence is in the browser**, not on the server: see "Settings in the browser" below.
 
+## MIDI clock (`backend/clock.py`)
+
+The user asked for MIDI clock (24 ticks per quarter note, plus Start/Stop) with the systolic peaks as the downbeats: each heartbeat is a quarter or a half note (`fraction`), so a 70 bpm pulse drives a 70 or 140 bpm clock. Settings live in `MidiClock` and appear as `status.midi.clock`: `enabled`, `transport` (Start/Stop), `sensitivity` 0–100, `fraction` "1/4" | "1/2".
+
+- **Its own thread** (`midi-clock`): asyncio's timers fire in 15.6 ms steps on Windows; a tick is due every 15–40 ms. The thread sleeps with `time.sleep` (≤ 5 ms at a time; high resolution on Windows since Python 3.11) and sends through `MidiOutput.send_realtime()`. A lock in `MidiOutput` serialises the clock thread and the notes/CC on the port; a send failure is handed back to the event loop (`call_soon_threadsafe`) to update the status. Measured on macOS with the simulator: ticks median 0.8 ms late, p95 ~4 ms, max ~15 ms. An isolated sleep loop shows the same tail, so this is the OS scheduling floor, not the GIL (a shorter switch interval, a higher QoS class and spinning the last ms made no consistent difference). Not yet measured on Windows.
+- **Heartbeat times come from sample numbers** (`SampleTimes`): marks arrive 0.2–0.6 s late and BLE delivers in bursts. The smallest arrival-minus-sample-time over the last 10 s gives the offset to `perf_counter`, since bursts only ever make packets late. It resets after a 1 s gap in the stream.
+- **Phase-locked loop** (`BeatPll`), second order, updated once per heartbeat. It keeps 10 s of its own phase (piecewise linear segments) so it can measure how far off it was at the moment the heartbeat happened. The error, net of corrections still under way, adjusts the tempo (integral) and is worked off by the next expected heartbeat as a temporary tempo change (proportional). The clock never jumps or skips ticks while running. Gains come from one time constant τ in heartbeats: both poles at a = e^(−1/τ), so Kp = 1 − a², Ki = (1 − a)² (critically damped; derived for the per-beat discrete loop). Sensitivity maps logarithmically to τ = 16 (0, "smooth") … 1.5 (100, "tight"); 50 → ~4.9.
+- **The trade-off is physiological**: breathing alone moves the heart rate ±5–10% over 10–25 beats, so the beats drift ±100–200 ms against any smooth tempo. `tools/clock_sim.py` on the clean recording: τ 1.5 → beats 47 ms off (median), clock tempo changing 3.8 bpm rms from beat to beat; τ 4 → 64 ms / 2.1 bpm; τ 16 → 138 ms / 1.2 bpm. A correction never moves the tempo more than 50% (`MAX_SLEW`), so the clock can't stall.
+- **Robustness**: a heartbeat less than 0.6 beat after the last trusted one is a double detection and is ignored (a missed beat needs nothing: the phase error is the same). An earlier version rejected beats with a phase error > 0.3 beat; with heart-rate variability that threw away real beats at slow settings, so it was replaced. The loop locks afresh (tempo from the interval, full phase correction) on the first two beats, after 4 s without a trusted beat, after 3 "double detections" in a row, or when the median of the last 5 intervals is > 20% off its tempo. Before the first lock, the device's pulse rate (or 120 bpm) sets the tempo.
+- **Transport**: with Start/Stop on, the clock runs only while locked and within 5 s of the last trusted beat. Start goes out just before the first tick, which falls on a heartbeat; Stop goes out on pause, on losing the pulse, on disable, before the port closes and on shutdown. With Start/Stop off, the clock ticks whenever it is enabled and not paused, at the last tempo if there's no pulse. Switching Start/Stop restarts the clock (a Stop if it was on). While paused, the loop keeps following the heartbeats, like the detector, so it's in step on resume.
+- **Both detection modes** drive it: `Hub._on_wave` passes `systolic` and the device's `beat` marks, paused or not.
+
 ## OSC output (`backend/osc.py`)
 
 - **python-osc** `SimpleUDPClient`. UDP has no connection: *Connect* resolves the host (`getaddrinfo`; an unknown host shows an error) and opens a socket; nothing checks that a receiver exists. Host and port only take effect on the next connect, so the UI locks them while connected. A send failure (`OSError`) closes the output and shows the error, like MIDI.
@@ -97,11 +111,11 @@ Page → server: `{"type": "set_running", "running": bool}`, `{"type": "set_dete
 
 ## UI (`web/`)
 
-Layout: transport bar on top (brand, play/pause, connection state, SpO2/rate/PI, beat light), a 240 px scrollable menu column on the left (Detection type; MIDI output: port, channel, a "Control change" row and three note rows, each with on/off and a number, velocity and length; OSC output: host/port, prefix, four message rows showing their address). Notes and OSC messages for marks the current detector doesn't produce are shown greyed out (notch/diastolic in Device built-in mode), the graph filling the rest. **Dark by default**; the toggle at the top left of the transport bar switches to light. The choice is stored in `localStorage` (`oxibeat.theme`) and applied by an inline script in `index.html`'s head before the first paint (`data-theme` on `<html>`); the OS preference is deliberately ignored. All colours are CSS variables in `style.css`. Space toggles play/pause. Below 700 px width the menu stacks above the graph.
+Layout: transport bar on top (brand, play/pause, connection state, SpO2/rate/PI, beat light), a 240 px scrollable menu column on the left (Detection type; MIDI output: port, channel, a "Control change" row and three note rows, each with on/off and a number, velocity and length, and a "Clock" group with on/off, Start/Stop, heartbeat = 1/4 or 1/2 note, and a Smooth–Tight sensitivity slider; OSC output: host/port, prefix, four message rows showing their address). Notes and OSC messages for marks the current detector doesn't produce are shown greyed out (notch/diastolic in Device built-in mode), the graph filling the rest. **Dark by default**; the toggle at the top left of the transport bar switches to light. The choice is stored in `localStorage` (`oxibeat.theme`) and applied by an inline script in `index.html`'s head before the first paint (`data-theme` on `<html>`); the OS preference is deliberately ignored. All colours are CSS variables in `style.css`. Space toggles play/pause wherever the focus is, except in text and number fields and selects, where it types or opens the list. It used to work only with nothing focused, so after clicking a checkbox or the slider, Space toggled that control instead; now the keydown is taken and the keyup's default is prevented too, because buttons and checkboxes activate on keyup (without that, Space on the focused play button toggled twice). Below 700 px width the menu stacks above the graph.
 
 ### Settings in the browser (`app.js`)
 
-The server holds the live settings (shared by all pages) and forgets them on restart. Each page keeps a copy in `localStorage` under `oxibeat.settings`: `{detection, midi: {channel, cc, notes, velocity, length}, midiPort, osc: {host, port, prefix, wave, events}, oscConnected}`.
+The server holds the live settings (shared by all pages) and forgets them on restart. Each page keeps a copy in `localStorage` under `oxibeat.settings`: `{detection, midi: {channel, cc, notes, velocity, length, clock}, midiPort, osc: {host, port, prefix, wave, events}, oscConnected}`.
 
 - On the **first `status` of every WebSocket connection** (page load, or reconnect after a server restart) the page sends its stored settings to the server: `set_detection`, one `midi_set`, and `midi_connect` if a port is stored, the server has none open, and the port is in the list; then `osc_set` and, if `oscConnected`, `osc_connect`. With nothing stored, it stores the server's settings instead.
 - After that, every `status` is written back to storage, so changes from any page are kept.

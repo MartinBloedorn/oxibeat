@@ -5,7 +5,8 @@ WebSocket messages (JSON), server -> page:
    "detection": id, "detectors": [{"id", "label", "kinds": [kind, ...]}, ...],
    "midi": {"ports": [name, ...], "port": name or null, "error": str or null, "channel": 1..16,
             "cc": {"enabled", "number"}, "notes": {kind: {"enabled", "note"}, ...},
-            "velocity": {"fixed", "value"}, "length": "1/4" | "1/8" | "1/16" | "1/32"},
+            "velocity": {"fixed", "value"}, "length": "1/4" | "1/8" | "1/16" | "1/32",
+            "clock": {"enabled", "transport", "sensitivity": 0..100, "fraction": "1/4" | "1/2"}},
    "osc": {"host", "port", "prefix", "connected": bool, "error": str or null,
            "wave": {"enabled"}, "events": {kind: {"enabled"}, ...}}}
   {"type": "vitals", "spo2": int, "pr": int, "pi": float}
@@ -17,7 +18,7 @@ page -> server:
   {"type": "midi_refresh"}                       re-list the system's MIDI outputs
   {"type": "midi_connect", "port": name}
   {"type": "midi_disconnect"}
-  {"type": "midi_set", ...}                      any part of status.midi's channel / cc / notes / velocity / length
+  {"type": "midi_set", ...}                      any part of status.midi's channel / cc / notes / velocity / length / clock
   {"type": "osc_connect"}                        start sending to status.osc's host and port
   {"type": "osc_disconnect"}
   {"type": "osc_set", ...}                       any part of status.osc's host / port / prefix / wave / events
@@ -74,6 +75,8 @@ class Hub:
 
     def _on_vitals(self, v: Vitals):
         self._rate = v.pr or None
+        if v.pr:
+            self.midi.clock.pulse_rate(v.pr)
         if self.running:
             self._broadcast({"type": "vitals", "spo2": v.spo2, "pr": v.pr, "pi": v.pi})
 
@@ -88,6 +91,11 @@ class Hub:
             log.exception("detection failed; resetting the detector")
             self.detector.reset()
             marks = []
+        # the clock stays locked to the pulse while paused, like the detector
+        self.midi.clock.samples(self._n - 1)
+        for m in marks:
+            if m.kind in ("systolic", "beat"):
+                self.midi.clock.beat(m.n)
         if self.running:
             self.playout.push(w.samples)
             self._broadcast({"type": "wave", "n": n0, "samples": w.samples})
@@ -132,6 +140,7 @@ class Hub:
     def set_running(self, running: bool):
         if running != self.running:
             self.running = running
+            self.midi.clock.set_running(running)
             log.info("transport %s", "running" if running else "paused")
             if not running:
                 self.midi.all_notes_off()
@@ -224,6 +233,7 @@ async def serve(
     log.info("UI at %s", url)
     if on_ready:
         on_ready(url)
+    hub.midi.start()
     playout = asyncio.create_task(hub.playout.run(hub._on_wave_value))
     try:
         await hub.device.run()
