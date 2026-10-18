@@ -5,7 +5,9 @@ WebSocket messages (JSON), server -> page:
    "detection": id, "detectors": [{"id", "label", "kinds": [kind, ...]}, ...],
    "midi": {"ports": [name, ...], "port": name or null, "error": str or null, "channel": 1..16,
             "cc": {"enabled", "number"}, "notes": {kind: {"enabled", "note"}, ...},
-            "velocity": {"fixed", "value"}, "length": "1/4" | "1/8" | "1/16" | "1/32"}}
+            "velocity": {"fixed", "value"}, "length": "1/4" | "1/8" | "1/16" | "1/32"},
+   "osc": {"host", "port", "prefix", "connected": bool, "error": str or null,
+           "wave": {"enabled"}, "events": {kind: {"enabled"}, ...}}}
   {"type": "vitals", "spo2": int, "pr": int, "pi": float}
   {"type": "wave", "n": first sample's running number, "samples": [int, ...]}
   {"type": "marks", "marks": [[sample number, kind], ...]}  (may refer to samples already sent)
@@ -16,6 +18,9 @@ page -> server:
   {"type": "midi_connect", "port": name}
   {"type": "midi_disconnect"}
   {"type": "midi_set", ...}                      any part of status.midi's channel / cc / notes / velocity / length
+  {"type": "osc_connect"}                        start sending to status.osc's host and port
+  {"type": "osc_disconnect"}
+  {"type": "osc_set", ...}                       any part of status.osc's host / port / prefix / wave / events
 """
 
 import asyncio
@@ -29,7 +34,10 @@ from aiohttp import WSMsgType, web
 from .detection import DETECTORS, Mark
 from .device import Device
 from .midi import MidiOutput
+from .osc import OscOutput
+from .playout import Playout
 from .protocol import Vitals, Wave
+from .rate import effective_bpm
 from .simulator import Simulator
 
 log = logging.getLogger(__name__)
@@ -46,7 +54,10 @@ class Hub:
         self._clients: dict[web.WebSocketResponse, asyncio.Queue] = {}
         self._n = 0  # running number of the next waveform sample
         self.detector = DETECTORS[detection]()
+        self._rate: float | None = None  # the device's latest pulse rate
+        self.playout = Playout()  # the smoothed waveform for the outputs
         self.midi = MidiOutput(lambda: self._broadcast(self._status()))
+        self.osc = OscOutput(lambda: self._broadcast(self._status()))
         if simulate:
             self.device = Simulator(self._on_state, self._on_vitals, self._on_wave)
         else:
@@ -58,11 +69,11 @@ class Hub:
     def _on_state(self, state: dict):
         self.detector.reset()
         if state["state"] != "connected":
-            self.midi.set_rate(None)
+            self._rate = None
         self._broadcast(self._status())
 
     def _on_vitals(self, v: Vitals):
-        self.midi.set_rate(v.pr or None)
+        self._rate = v.pr or None
         if self.running:
             self._broadcast({"type": "vitals", "spo2": v.spo2, "pr": v.pr, "pi": v.pi})
 
@@ -78,15 +89,22 @@ class Hub:
             self.detector.reset()
             marks = []
         if self.running:
-            self.midi.push_samples(w.samples)
+            self.playout.push(w.samples)
             self._broadcast({"type": "wave", "n": n0, "samples": w.samples})
             if marks:
                 self._on_marks(marks)
 
     def _on_marks(self, marks: list[Mark]):
+        bpm = effective_bpm(self._rate)
         for m in marks:
-            self.midi.trigger(m.kind)
+            self.midi.trigger(m.kind, bpm)
+            self.osc.trigger(m.kind, bpm)
         self._broadcast({"type": "marks", "marks": [[m.n, m.kind] for m in marks]})
+
+    def _on_wave_value(self, value: float):
+        """The smoothed waveform, every playout tick."""
+        self.midi.send_wave(value)
+        self.osc.send_wave(value)
 
     # --- clients ----------------------------------------------------------
 
@@ -98,6 +116,7 @@ class Hub:
             "detection": self.detector.id,
             "detectors": [{"id": d.id, "label": d.label, "kinds": d.kinds} for d in DETECTORS.values()],
             "midi": self.midi.state(),
+            "osc": self.osc.state(),
         }
 
     def _broadcast(self, msg: dict):
@@ -116,7 +135,7 @@ class Hub:
             log.info("transport %s", "running" if running else "paused")
             if not running:
                 self.midi.all_notes_off()
-                self.midi.clear_samples()
+                self.playout.clear()
             self._broadcast(self._status())
 
     def set_detection(self, detection: str):
@@ -126,8 +145,9 @@ class Hub:
             self._broadcast(self._status())
 
     async def close(self):
-        """Closes the MIDI port and every page's socket, so shutdown doesn't wait on them."""
+        """Closes the outputs and every page's socket, so shutdown doesn't wait on them."""
         self.midi.close()
+        self.osc.close()
         clients = list(self._clients)
         self._clients.clear()
         await asyncio.gather(*(ws.close() for ws in clients), return_exceptions=True)
@@ -165,6 +185,12 @@ class Hub:
                     self.midi.disconnect()
                 elif kind == "midi_set":
                     self.midi.update(data)
+                elif kind == "osc_connect":
+                    self.osc.connect()
+                elif kind == "osc_disconnect":
+                    self.osc.disconnect()
+                elif kind == "osc_set":
+                    self.osc.update(data)
         finally:
             writer_task.cancel()
             self._clients.pop(ws, None)
@@ -198,10 +224,10 @@ async def serve(
     log.info("UI at %s", url)
     if on_ready:
         on_ready(url)
-    midi_playout = asyncio.create_task(hub.midi.run())
+    playout = asyncio.create_task(hub.playout.run(hub._on_wave_value))
     try:
         await hub.device.run()
     finally:
-        midi_playout.cancel()
+        playout.cancel()
         await hub.close()
         await runner.cleanup()

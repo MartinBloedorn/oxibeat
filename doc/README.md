@@ -20,17 +20,19 @@ Done and tested on the real device:
 3. **Detection modes**, switchable in the UI or with `--detection`:
    - *Device built-in*: the oximeter's own beat flag;
    - *Waveform analysis*: oxibeat's streaming detector marking systolic peak, dicrotic notch and diastolic peak per beat.
-4. **MIDI output** (left menu): port selection/refresh, connect/disconnect, channel; waveform as a smoothed CC (buffered and interpolated like the graph); a note per systolic peak / dicrotic notch / diastolic peak with on/off and note number each. Tested end to end with a fake port, the simulator and a headless browser (settings restore); real ports open and close, but no real MIDI has been sent to a synth or DAW yet.
+4. **MIDI output** (left menu): port selection/refresh, connect/disconnect, channel; waveform as a smoothed CC (buffered and interpolated like the graph); a note per systolic peak / dicrotic notch / diastolic peak with on/off and note number each; fixed or rate-based velocity; note length 1/4–1/32 of the pulse rate. Tested end to end with a fake port, the simulator and a headless browser (settings restore); real ports open and close, but no real MIDI has been sent to a synth or DAW yet.
+5. **OSC output** (left menu): host/port, connect/disconnect, prefix (default `oxibeat`); `/<prefix>/data` (waveform 0–1, smoothed) and `/<prefix>/systolic|notch|diastolic` (pulse rate as float), each switchable. Tested end to end over UDP to a local python-osc receiver, and in a headless browser; not yet with the user's own OSC software.
+6. Settings (detection, MIDI, OSC) are kept in the browser's localStorage and pushed back to the server when a page connects. Light/dark theme toggle, dark by default.
 
 Not started:
 
-- **OSC output**. Hook: `Hub._on_marks()` in `backend/server.py` receives every detected mark (MIDI is triggered there too); `Hub._on_wave()` gets the samples; `Hub.running` is the play/pause gate; vitals arrive in `Hub._on_vitals()`. `backend/midi.py` is the model to follow (server-side settings in `status`, partial updates from the page).
-- Vitals (SpO2, rate, PI) are not sent over MIDI.
+- Vitals (SpO2, rate, PI) are not sent over MIDI or OSC.
+- Real-world test of MIDI and OSC with the user's software (DAW, TouchDesigner, etc.).
 - Further menus/options (the user said more will come).
 
 ## Suggested next steps
 
-1. OSC output (e.g. `python-osc`), same pattern as MIDI. Ask the user for the address scheme.
+1. Try MIDI and OSC with the user's actual software and adjust (latency of the smoothed waveform vs. events, message rates).
 2. Settings are kept in the browser (localStorage); if the server should run headless with saved settings (no page open), add server-side persistence.
 3. Detection improvements listed in `Detection.md` → "Known limitations and ideas", mainly lower latency for MIDI use and recordings at higher heart rates.
 

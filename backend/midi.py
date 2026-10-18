@@ -2,18 +2,11 @@
 
 Everything goes out on one channel. Settings live here and are shown to the
 pages through `state()`; `update()` takes the same shape (partially) back.
-
-The waveform reaches the server in bursts (5 samples per BLE packet, packets
-sometimes 0.5 s apart). Sent as it arrives, the CC would be just as choppy, so
-`run()` plays it out the way the UI's graph does: a short buffer absorbs the
-bursts, samples are consumed at a steady 50 Hz, and the value is interpolated
-between samples on every tick.
+The waveform arrives already smoothed (see playout.py) through `send_wave()`.
 """
 
 import asyncio
 import logging
-import time
-from collections import deque
 from typing import Callable
 
 import mido
@@ -25,14 +18,6 @@ NOTE_KINDS = ("systolic", "notch", "diastolic")
 KIND_ALIASES = {"beat": "systolic"}
 # note lengths as fractions of a whole note; a quarter note is one beat of the pulse rate
 LENGTHS = {"1/4": 1.0, "1/8": 0.5, "1/16": 0.25, "1/32": 0.125}  # in beats
-DEFAULT_BPM = 120  # used when the device reports no (or an implausible) pulse rate
-BPM_RANGE = (20, 300)
-
-# CC playout, as in web/app.js
-RATE = 50.0  # waveform samples per second
-TARGET_DELAY = 0.4  # s of samples kept buffered; BLE packets can arrive ~0.5 s apart
-MAX_BACKLOG = 1.0  # s; beyond this the buffer is cut back to the target
-TICK = 0.005  # s between CC updates (~6 ms in practice on Windows)
 
 
 def _clamp(value, lo: int, hi: int, default: int) -> int:
@@ -54,15 +39,8 @@ class MidiOutput:
         self.notes = {kind: {"enabled": False, "note": note} for kind, note in zip(NOTE_KINDS, (36, 38, 42))}
         self.velocity = {"fixed": True, "value": 100}  # not fixed: velocity = pulse rate
         self.length = "1/16"
-        self._bpm: float | None = None  # latest pulse rate from the device
         self._note_offs: dict[int, asyncio.TimerHandle] = {}
-        # CC playout
-        self._queue: deque[int] = deque()
-        self._pos = 0.0  # fractional position between _queue[0] and _queue[1]
-        self._speed = 1.0
-        self._playing = False
         self._last_cc: int | None = None
-        self._last_push = 0.0
 
     def state(self) -> dict:
         return {
@@ -161,16 +139,17 @@ class MidiOutput:
             log.warning("%s", self.error)
             self._on_change()
 
-    def set_rate(self, bpm: float | None):
-        """The device's current pulse rate (None when there is none)."""
-        self._bpm = bpm
+    def send_wave(self, value: float):
+        """The smoothed waveform (0..127); sent as CC when it changes."""
+        if self._port is None or not self.cc["enabled"]:
+            return
+        cc = round(value)
+        if cc != self._last_cc:
+            self._last_cc = cc
+            self._send(mido.Message("control_change", channel=self.channel - 1, control=self.cc["number"], value=cc))
 
-    def bpm(self) -> float:
-        if self._bpm is None or not BPM_RANGE[0] <= self._bpm <= BPM_RANGE[1]:
-            return DEFAULT_BPM
-        return self._bpm
-
-    def trigger(self, kind: str):
+    def trigger(self, kind: str, bpm: float):
+        """A detected mark: plays its note if enabled; `bpm` sets velocity (if not fixed) and length."""
         setting = self.notes.get(KIND_ALIASES.get(kind, kind))
         if self._port is None or not setting or not setting["enabled"]:
             return
@@ -181,7 +160,6 @@ class MidiOutput:
             # retriggered before it ended: end it now so on/off stay paired
             pending.cancel()
             self._send(mido.Message("note_off", channel=ch, note=note))
-        bpm = self.bpm()
         velocity = self.velocity["value"] if self.velocity["fixed"] else _clamp(round(bpm), 1, 127, 127)
         length = 60 / bpm * LENGTHS[self.length]
         self._send(mido.Message("note_on", channel=ch, note=note, velocity=velocity))
@@ -201,57 +179,3 @@ class MidiOutput:
             if self._port is not None:
                 self._send(mido.Message("note_off", channel=ch, note=note))
         self._note_offs.clear()
-
-    # --- CC playout --------------------------------------------------------
-
-    def push_samples(self, samples: list[int]):
-        now = time.perf_counter()
-        if now - self._last_push > 1.0:
-            # the stream paused (device off, reconnect): start over with a full buffer
-            # instead of playing the new samples from a near-empty one
-            self.clear_samples()
-        self._last_push = now
-        self._queue.extend(samples)
-        if len(self._queue) > RATE * MAX_BACKLOG:
-            for _ in range(len(self._queue) - round(RATE * TARGET_DELAY)):
-                self._queue.popleft()
-
-    def clear_samples(self):
-        """Drops buffered samples (on pause), so resuming doesn't replay stale ones."""
-        self._queue.clear()
-        self._playing = False
-
-    async def run(self):
-        """Plays buffered samples out as CC until cancelled."""
-        # perf_counter, not loop.time(): on Windows the latter only moves in 15.6 ms steps
-        last = time.perf_counter()
-        while True:
-            await asyncio.sleep(TICK)
-            now = time.perf_counter()
-            value = self._advance(min(now - last, 0.1))
-            last = now
-            if value is not None and value != self._last_cc and self._port is not None and self.cc["enabled"]:
-                self._last_cc = value
-                self._send(mido.Message("control_change", channel=self.channel - 1, control=self.cc["number"], value=value))
-
-    def _advance(self, dt: float) -> int | None:
-        """Moves the playout position on by `dt` seconds; returns the CC value there."""
-        target = RATE * TARGET_DELAY
-        if not self._playing:
-            # (re)start only with a full buffer, so playback doesn't stutter at once
-            if len(self._queue) < target:
-                return None
-            self._playing, self._pos, self._speed = True, 0.0, 1.0
-        if len(self._queue) < 2:
-            self._playing = False
-            return self._queue[0] if self._queue else None
-        # nudge the speed so the buffer stays near its target; smoothed so it doesn't jerk
-        wanted = min(1.25, max(0.8, 1 + 0.25 * (len(self._queue) - target) / target))
-        self._speed += (wanted - self._speed) * min(1.0, dt * 1.5)
-        self._pos += RATE * self._speed * dt
-        while self._pos >= 1 and len(self._queue) > 2:
-            self._queue.popleft()
-            self._pos -= 1
-        self._pos = min(self._pos, 1.0)
-        a, b = self._queue[0], self._queue[1]
-        return round(a + (b - a) * self._pos)

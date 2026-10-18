@@ -225,7 +225,10 @@ function render() {
 
   playBtn.disabled = !serverUp;
   detectionEl.disabled = !serverUp;
-  if (!serverUp) renderMidi();
+  if (!serverUp) {
+    renderMidi();
+    renderOsc();
+  }
   playBtn.classList.toggle("paused", !running);
   playBtn.setAttribute("aria-label", running ? "Pause" : "Play");
 
@@ -275,9 +278,11 @@ function onStatus(msg) {
   detection = msg.detection;
   detectors = msg.detectors;
   midi = msg.midi;
+  osc = msg.osc;
   syncSettings(msg);
   renderDetection();
   renderMidi();
+  renderOsc();
   render();
 }
 
@@ -410,6 +415,75 @@ for (const row of midiEls.notes) {
   });
 }
 
+// --- OSC output ------------------------------------------------------------
+
+const oscEls = {
+  host: $("osc-host"),
+  port: $("osc-port"),
+  connect: $("osc-connect"),
+  status: $("osc-status"),
+  prefix: $("osc-prefix"),
+  rows: [...document.querySelectorAll(".osc-row")],
+};
+const OSC_NAMES = { wave: "data", systolic: "systolic", notch: "notch", diastolic: "diastolic" };
+let osc = null;
+
+function renderOsc() {
+  const live = serverUp && osc;
+  for (const el of [oscEls.host, oscEls.port, oscEls.connect, oscEls.prefix]) el.disabled = !live;
+  for (const row of oscEls.rows) row.querySelector("input").disabled = !live;
+  if (!osc) return;
+
+  setValue(oscEls.host, osc.host);
+  setValue(oscEls.port, osc.port);
+  oscEls.host.disabled = oscEls.port.disabled = !live || osc.connected;  // change them while disconnected
+  oscEls.connect.textContent = osc.connected ? "Disconnect" : "Connect";
+  oscEls.connect.classList.toggle("active", osc.connected);
+  oscEls.status.textContent = osc.error ?? (osc.connected ? `Sending to ${osc.host}:${osc.port}` : "Not connected");
+  oscEls.status.classList.toggle("error", Boolean(osc.error));
+  setValue(oscEls.prefix, osc.prefix);
+
+  // like the notes: marks the current detector doesn't produce are shown but unavailable
+  const kinds = detectors.find((d) => d.id === detection)?.kinds ?? [];
+  for (const row of oscEls.rows) {
+    const key = row.dataset.osc;
+    const check = row.querySelector("input");
+    const ok = key === "wave" || kinds.includes(key) || (key === "systolic" && kinds.includes("beat"));
+    row.classList.toggle("unavailable", !ok);
+    check.disabled = !live || !ok;
+    check.checked = key === "wave" ? osc.wave.enabled : osc.events[key].enabled;
+    const address = osc.prefix ? `/${osc.prefix}/${OSC_NAMES[key]}` : `/${OSC_NAMES[key]}`;
+    const addressEl = row.querySelector(".osc-address");
+    addressEl.textContent = addressEl.title = address;
+  }
+}
+
+oscEls.host.addEventListener("change", () => send({ type: "osc_set", host: oscEls.host.value }));
+oscEls.port.addEventListener("change", () => {
+  if (Number.isFinite(intValue(oscEls.port))) send({ type: "osc_set", port: intValue(oscEls.port) });
+  else renderOsc();
+});
+oscEls.prefix.addEventListener("change", () => send({ type: "osc_set", prefix: oscEls.prefix.value }));
+oscEls.connect.addEventListener("click", () => {
+  if (osc.connected) {
+    send({ type: "osc_disconnect" });
+    saveSettings({ oscConnected: false });
+  } else {
+    // take whatever is in the fields, even if they haven't fired "change" yet
+    send({ type: "osc_set", host: oscEls.host.value, port: intValue(oscEls.port) || osc.port });
+    send({ type: "osc_connect" });
+    saveSettings({ oscConnected: true });
+  }
+});
+for (const row of oscEls.rows) {
+  const key = row.dataset.osc;
+  const check = row.querySelector("input");
+  check.addEventListener("change", () =>
+    send(key === "wave"
+      ? { type: "osc_set", wave: { enabled: check.checked } }
+      : { type: "osc_set", events: { [key]: { enabled: check.checked } } }));
+}
+
 // --- settings kept in the browser ---------------------------------------------
 // The server holds the live settings (shared by all pages) but forgets them when
 // it restarts. Each page keeps a copy in localStorage and hands it to the server
@@ -437,7 +511,12 @@ function saveSettings(patch) {
 function syncSettings(msg) {
   if (restored) {
     const { channel, cc, notes, velocity, length } = msg.midi;
-    saveSettings({ detection: msg.detection, midi: { channel, cc, notes, velocity, length } });
+    const { host, port, prefix, wave, events } = msg.osc;
+    saveSettings({
+      detection: msg.detection,
+      midi: { channel, cc, notes, velocity, length },
+      osc: { host, port, prefix, wave, events },
+    });
     return;
   }
   restored = true;
@@ -451,6 +530,8 @@ function syncSettings(msg) {
   if (stored.midiPort && msg.midi.port === null && msg.midi.ports.includes(stored.midiPort)) {
     send({ type: "midi_connect", port: stored.midiPort });
   }
+  if (stored.osc) send({ type: "osc_set", ...stored.osc });
+  if (stored.oscConnected && !msg.osc.connected) send({ type: "osc_connect" });
 }
 
 function connect() {

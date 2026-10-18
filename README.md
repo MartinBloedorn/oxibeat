@@ -41,7 +41,7 @@ The server keeps scanning for the oximeter and connects whenever it shows up. Th
 
 ## UI
 
-- **Transport bar:** light/dark toggle (dark by default; the choice is remembered in the browser), play/pause (also the Space key), the device connection state, and SpO₂, pulse rate and perfusion index as shown on the device's display. Pausing is server-side: it stops the data going to every open page (and later MIDI/OSC), not just the one where you clicked.
+- **Transport bar:** light/dark toggle (dark by default; the choice is remembered in the browser), play/pause (also the Space key), the device connection state, and SpO₂, pulse rate and perfusion index as shown on the device's display. Pausing is server-side: it stops the data going to every open page and to MIDI and OSC, not just the page where you clicked.
 - **Menu (left):** settings. **Detection type** picks how beats are found (shared by all open pages):
   - *Device built-in* uses the beat flag the oximeter puts in its waveform.
   - *Waveform analysis* runs oxibeat's own detector on the waveform and marks the systolic peak, the dicrotic notch and the diastolic peak of every beat. See below.
@@ -52,7 +52,11 @@ The server keeps scanning for the oximeter and connects whenever it shows up. Th
     - *Length* 1/4, 1/8, 1/16 or 1/32 of a note at the current pulse rate (a quarter note is one beat), e.g. 1/16 at 72 bpm = 208 ms.
     - The pulse rate is the device's (`RATE` in the transport bar); when it has none or an implausible one (outside 20–300 bpm), 120 bpm is used.
   - Nothing is sent while paused.
-- **Settings are kept in the browser** (localStorage): detection type, MIDI port, channel, CC and notes. The server holds the live settings for all pages but forgets them when it restarts; a page hands its saved copy back to the server whenever it connects, including reconnecting the saved MIDI port if it's available.
+- **OSC output (left menu):** host and port (editable while disconnected), Connect/Disconnect, and the address prefix (default `oxibeat`). OSC goes over UDP, so "connected" means oxibeat is sending; it can't tell whether anything is listening. Messages, each with its own on/off:
+  - `/oxibeat/data` *float*: the waveform normalised to 0–1, smoothed like the graph and the MIDI CC (sent when it changes, up to ~100/s).
+  - `/oxibeat/systolic`, `/oxibeat/notch`, `/oxibeat/diastolic` *float*: on every detected mark, carrying the pulse rate in bpm, e.g. `/oxibeat/systolic 94.0` (same rate rule as for MIDI: 120 when the device has none). In *Device built-in* mode only `/systolic` is available, sent on the device's beat flag.
+  - The prefix may contain `/` for nested addresses (`stage/left` gives `/stage/left/data`); spaces and OSC pattern characters (`#*,?[]{}`) are removed.
+- **Settings are kept in the browser** (localStorage): detection type, MIDI port, channel, CC and notes, and OSC host, port, prefix, messages and whether it was connected. The server holds the live settings for all pages but forgets them when it restarts; a page hands its saved copy back to the server whenever it connects, including reconnecting the saved MIDI port if it's available.
 - **Graph:** the pulse waveform, scrolling right to left, with a vertical line at every detected mark (legend top left).
 
 ## Waveform analysis
@@ -70,7 +74,8 @@ The notch and diastolic peak can only be judged once the down-slope has been see
 - `backend/protocol.py` parses the device's packets (format described in `external/viatom_pc60fw/README.md` and `doc/Device.md`; bit 7 of a waveform sample is the beat flag).
 - `backend/device.py` handles the BLE scan / connect / reconnect loop (using [bleak](https://github.com/hbldh/bleak)).
 - `backend/detection.py` holds the beat detectors.
-- `backend/midi.py` is the MIDI output ([mido](https://mido.readthedocs.io) with python-rtmidi).
+- `backend/midi.py` is the MIDI output ([mido](https://mido.readthedocs.io) with python-rtmidi), `backend/osc.py` the OSC output ([python-osc](https://github.com/attwad/python-osc)).
+- `backend/playout.py` smooths the waveform for both outputs; `backend/rate.py` holds the pulse-rate rule they share.
 - `backend/server.py` serves `web/` and relays data to pages over a WebSocket at `/ws`; the message format is at the top of that file.
 - `web/` is the UI: plain HTML/CSS/JS, no build step.
 - `tools/` has scripts to record the device, replay recordings through the detector, score it on synthetic data, and screenshot the UI; `data/recordings/` has real recordings.

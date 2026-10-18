@@ -119,6 +119,35 @@
           <span id="notes-hint" class="hint"></span>
         </div>
       </section>
+
+      <section class="menu-section" aria-labelledby="osc-title">
+        <h2 id="osc-title" class="menu-title">OSC output</h2>
+
+        <div class="field">
+          <div class="host-row">
+            <label class="field-label" for="osc-host">Host</label>
+            <label class="field-label" for="osc-port">Port</label>
+            <input type="text" id="osc-host" spellcheck="false" autocomplete="off">
+            <input type="number" id="osc-port" min="1" max="65535">
+          </div>
+          <button id="osc-connect" class="btn" type="button">Connect</button>
+          <span id="osc-status" class="hint" role="status"></span>
+        </div>
+
+        <label class="field">
+          <span class="field-label">Prefix</span>
+          <input type="text" id="osc-prefix" spellcheck="false" autocomplete="off">
+        </label>
+
+        <div class="group">
+          <span class="group-title">Messages</span>
+          <label class="osc-row check" data-osc="wave"><input type="checkbox"> Waveform <code class="osc-address"></code></label>
+          <label class="osc-row check" data-osc="systolic"><input type="checkbox"> Systolic peak <code class="osc-address"></code></label>
+          <label class="osc-row check" data-osc="notch"><input type="checkbox"> Dicrotic notch <code class="osc-address"></code></label>
+          <label class="osc-row check" data-osc="diastolic"><input type="checkbox"> Diastolic peak <code class="osc-address"></code></label>
+          <span class="hint">Waveform as a 0–1 float, smoothed like the graph. Peaks and the notch carry the pulse rate in bpm as a float.</span>
+        </div>
+      </section>
     </nav>
 
     <section class="graph" aria-label="Pulse waveform">
