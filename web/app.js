@@ -28,6 +28,8 @@ const MARKS = {
 let ws = null;
 let serverUp = false;
 let running = true;
+let graphOn = true;            // the graph can be switched off to save resources; nothing else changes
+let frameId = 0;
 let device = { state: "scanning", name: null };
 let detection = null;
 let detectors = [];
@@ -48,6 +50,7 @@ let buffering = true;         // waiting for the queue to fill before (re)starti
 const arrivals = [];          // [time ms, sample count] over the last few seconds
 
 function onWave(n0, samples) {
+  if (!graphOn) return;
   if (n0 <= lastSn) marks.clear();                  // server restarted its numbering
   lastSn = n0 + samples.length - 1;
   const now = performance.now();
@@ -98,6 +101,11 @@ function advance(dt) {
 }
 
 function onMarks(list) {
+  if (!graphOn) {
+    // no playout to time the beat light: flash it as marks arrive (a few per second at most)
+    if (list.some(([, kind]) => MARKS[kind]?.beat)) flashBeat();
+    return;
+  }
   for (const [sn, kind] of list) marks.set(sn, kind);
 }
 
@@ -207,9 +215,44 @@ function frame(now) {
   advance(Math.min(0.1, (now - last) / 1000));
   last = now;
   draw();
-  requestAnimationFrame(frame);
+  frameId = requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+
+// off: stop animating and drop all graph data; on: start over from an empty graph
+const graphBtn = $("graph");
+function setGraph(on) {
+  graphOn = on;
+  cancelAnimationFrame(frameId);
+  queue.length = history.length = arrivals.length = 0;
+  marks.clear();
+  shown = acc = 0;
+  lastSn = -1;
+  buffering = true;
+  if (on) {
+    last = performance.now();
+    frameId = requestAnimationFrame(frame);
+  } else {
+    frameId = 0;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  graphBtn.classList.toggle("off", !on);
+  graphBtn.title = graphBtn.ariaLabel = on ? "Turn the graph off" : "Turn the graph on";
+  try {
+    localStorage.setItem("oxibeat.graph", on ? "on" : "off");
+  } catch {
+    // not remembered without storage
+  }
+  if (ws) render();
+}
+graphBtn.addEventListener("click", () => setGraph(!graphOn));
+let storedGraph = null;
+try {
+  storedGraph = localStorage.getItem("oxibeat.graph");
+} catch {
+  // default on
+}
+if (storedGraph === "off") setGraph(false);
+else frameId = requestAnimationFrame(frame);
 
 // --- transport & status ----------------------------------------------------
 
@@ -236,8 +279,8 @@ function render() {
     overlay.hidden = false;
     overlay.textContent = state === "offline" ? "No connection to the oxibeat server" : "Waiting for oximeter";
   } else {
-    overlay.hidden = running;
-    overlay.textContent = "Paused";
+    overlay.hidden = running && graphOn;
+    overlay.textContent = running ? "Graph off" : "Paused";
   }
   if (state !== "connected") setVitals(null);
 }
