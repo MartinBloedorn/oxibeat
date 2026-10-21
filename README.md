@@ -26,9 +26,19 @@ python3.11 -m venv .venv
 
 Python 3.11 isn't a style preference here: `python-rtmidi` only publishes prebuilt wheels up to cp3.12, so on 3.13/3.14 pip falls back to compiling RtMidi's bundled C++ from source. On macOS that build fails outright — the JACK code path it pulls in calls `sem_timedwait`, a POSIX semaphore function Darwin doesn't implement. If `pip install` dies on `python-rtmidi` with an error like `use of undeclared identifier 'sem_timedwait'`, delete `.venv` and recreate it with an explicit `python3.11` (not the bare `python3`, which Homebrew keeps pointed at its latest release) and reinstall.
 
+On Linux (Fedora shown; use your distribution's equivalents elsewhere), the same applies with the system Python, but building `python-rtmidi` needs the Python and ALSA headers. Install them first, otherwise pip stops with `Python dependency not found`:
+
+```
+sudo dnf install python3-devel alsa-lib-devel
+python3 -m venv .venv
+.venv/bin/python -m pip install -r oxibeat/requirements.txt
+```
+
+On Debian/Ubuntu, the packages are `python3-dev libasound2-dev`.
+
 ## Running
 
-From the `oxibeat` folder, with the venv activated (`..\.venv\Scripts\activate` on Windows, `source ../.venv/bin/activate` on macOS):
+From the `oxibeat` folder, with the venv activated (`..\.venv\Scripts\activate` on Windows, `source ../.venv/bin/activate` on macOS and Linux):
 
 ```
 python oxibeat.py
