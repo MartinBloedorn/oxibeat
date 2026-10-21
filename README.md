@@ -66,6 +66,7 @@ The server keeps scanning for the oximeter and connects whenever it shows up. Th
   - *Waveform analysis* runs oxibeat's own detector on the waveform and marks the systolic peak, the dicrotic notch and the diastolic peak of every beat. See below.
 - **MIDI output (left menu):** pick an output port (↻ re-lists the system's ports), Connect/Disconnect, and the channel everything is sent on.
   - *Control change → Waveform*: sends the waveform as a control change on the chosen CC number. Like the graph, it is buffered ~0.4 s to even out Bluetooth's bursts and interpolated between samples, so it moves smoothly (~100 updates/s, typically 1 step at a time) instead of in jumps.
+  - *Control change → Device on*: its own CC number (default 2); sends 127 when the oximeter connects and 0 when it disconnects or is lost. The oximeter switches itself off a few seconds after the finger is removed, so expect this to toggle during a session. Not delayed or smoothed. The current state is also sent when the option is enabled, the port is connected or the channel changes, so a receiver starts in step.
   - *Notes*: a note for each systolic peak, dicrotic notch and diastolic peak, each with its own on/off and note number. In *Device built-in* mode only the systolic note is available; it's played by the device's beat flag.
     - *Fixed velocity* (on by default, 100); when off, the velocity is the pulse rate in bpm (capped at 127).
     - *Length* 1/4, 1/8, 1/16 or 1/32 of a note at the current pulse rate (a quarter note is one beat), e.g. 1/16 at 72 bpm = 208 ms.
@@ -75,8 +76,9 @@ The server keeps scanning for the oximeter and connects whenever it shows up. Th
 - **OSC output (left menu):** host and port (editable while disconnected), Connect/Disconnect, and the address prefix (default `oxibeat`). OSC goes over UDP, so "connected" means oxibeat is sending; it can't tell whether anything is listening. Messages, each with its own on/off:
   - `/oxibeat/data` *float*: the waveform normalised to 0–1, smoothed like the graph and the MIDI CC (sent when it changes, up to ~100/s).
   - `/oxibeat/systolic`, `/oxibeat/notch`, `/oxibeat/diastolic` *float*: on every detected mark, carrying the pulse rate in bpm, e.g. `/oxibeat/systolic 94.0` (same rate rule as for MIDI: 120 when the device has none). In *Device built-in* mode only `/systolic` is available, sent on the device's beat flag.
+  - `/oxibeat/device` *int*: `1` when the oximeter connects, `0` when it disconnects or is lost. The current state is also sent when the option is enabled or OSC connects.
   - The prefix may contain `/` for nested addresses (`stage/left` gives `/stage/left/data`); spaces and OSC pattern characters (`#*,?[]{}`) are removed.
-- **Settings are kept in the browser** (localStorage): detection type, MIDI port, channel, CC and notes, and OSC host, port, prefix, messages and whether it was connected. The server holds the live settings for all pages but forgets them when it restarts; a page hands its saved copy back to the server whenever it connects, including reconnecting the saved MIDI port if it's available.
+- **Settings are kept in the browser** (localStorage): detection type, MIDI port, channel, CC, device-on CC and notes, and OSC host, port, prefix, messages and whether it was connected. The server holds the live settings for all pages but forgets them when it restarts; a page hands its saved copy back to the server whenever it connects, including reconnecting the saved MIDI port if it's available.
 - **Graph:** the pulse waveform, scrolling right to left, with a vertical line at every detected mark (legend top left).
 
 ## Waveform analysis

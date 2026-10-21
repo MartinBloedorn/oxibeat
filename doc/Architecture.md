@@ -85,6 +85,7 @@ The user asked for MIDI clock (24 ticks per quarter note, plus Start/Stop) with 
 
 - **python-osc** `SimpleUDPClient`. UDP has no connection: *Connect* resolves the host (`getaddrinfo`; an unknown host shows an error) and opens a socket; nothing checks that a receiver exists. Host and port only take effect on the next connect, so the UI locks them while connected. A send failure (`OSError`) closes the output and shows the error, like MIDI.
 - **Addresses**: `/<prefix>/data`, `/<prefix>/systolic`, `/<prefix>/notch`, `/<prefix>/diastolic`. The user asked for "<prefix>/data"; OSC requires a leading `/`, so it is added. `clean_prefix()` strips spaces, OSC pattern characters (`#*,?[]{}`) and empty parts; `/` inside the prefix is kept for nested addresses. Empty prefix → `/data` etc.
+- **Device on**: `/<prefix>/device`, int 1 while the oximeter is connected, 0 otherwise (also while only "connecting"). `Hub._on_state` hands every device state to `set_device_on()` on both outputs, which send only when the on/off value changes; MIDI does the same as a CC (127/0, own number, default 2). Because a change can happen while an output is closed or disabled, the current value is also resent when the option is enabled, the port/socket opens and (MIDI) the channel changes.
 - **Waveform**: the shared playout value divided by 127, rounded to 4 decimals, sent when it changes (~95–170 messages/s while the pulse moves, none on flat stretches). Same ~0.4 s delay as the CC.
 - **Events**: one float, the pulse rate in bpm (`effective_bpm`), sent the moment the mark is detected. The device's `beat` mark is sent as `systolic`. Notch/diastolic come ~0.3–0.6 s after the event, like their MIDI notes.
 - **State in `status.osc`**, partial updates via `osc_set`, like MIDI. Settings and whether it was connected are kept in the browser.
@@ -106,7 +107,7 @@ All JSON. Server → page:
 - `status` is sent on connect and on every change of device state, pause state or detection mode.
 - `wave.n` is the running number of the first sample. **Marks refer to samples by that number and may arrive after their samples were sent** (the notch is only known ~0.5 s later), so the page must keep marks in a map keyed by sample number rather than attach them to incoming samples.
 
-Page → server: `{"type": "set_running", "running": bool}`, `{"type": "set_detection", "detection": id}`, and `midi_refresh` / `midi_connect` (`port`) / `midi_disconnect` / `midi_set` (any part of `channel`, `cc`, `notes`). `status` also carries `midi`: ports, open port, error, channel, cc and notes settings; the full shapes are in the docstring of `backend/server.py`.
+Page → server: `{"type": "set_running", "running": bool}`, `{"type": "set_detection", "detection": id}`, and `midi_refresh` / `midi_connect` (`port`) / `midi_disconnect` / `midi_set` (any part of `channel`, `cc`, `device`, `notes`). `status` also carries `midi`: ports, open port, error, channel, cc, device and notes settings; the full shapes are in the docstring of `backend/server.py`.
 
 ### Startup and shutdown (`oxibeat.py`)
 
@@ -120,7 +121,7 @@ Layout: transport bar on top (brand, play/pause, connection state, SpO2/rate/PI,
 
 ### Settings in the browser (`app.js`)
 
-The server holds the live settings (shared by all pages) and forgets them on restart. Each page keeps a copy in `localStorage` under `oxibeat.settings`: `{detection, midi: {channel, cc, notes, velocity, length, clock}, midiPort, osc: {host, port, prefix, wave, events}, oscConnected}`.
+The server holds the live settings (shared by all pages) and forgets them on restart. Each page keeps a copy in `localStorage` under `oxibeat.settings`: `{detection, midi: {channel, cc, device, notes, velocity, length, clock}, midiPort, osc: {host, port, prefix, wave, events, device}, oscConnected}`.
 
 - On the **first `status` of every WebSocket connection** (page load, or reconnect after a server restart) the page sends its stored settings to the server: `set_detection`, one `midi_set`, and `midi_connect` if a port is stored, the server has none open, and the port is in the list; then `osc_set` and, if `oscConnected`, `osc_connect`. With nothing stored, it stores the server's settings instead.
 - After that, every `status` is written back to storage, so changes from any page are kept.

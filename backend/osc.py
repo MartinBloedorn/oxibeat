@@ -1,10 +1,11 @@
-"""OSC output over UDP: the waveform, and a message per detected mark.
+"""OSC output over UDP: the waveform, a message per detected mark, and the device's on/off state.
 
 Messages (with the default prefix "oxibeat"):
   /oxibeat/data       float 0..1   the smoothed waveform, whenever it changes (see playout.py)
   /oxibeat/systolic   float bpm    on every systolic peak (also the device's beat flag)
   /oxibeat/notch      float bpm    on every dicrotic notch
   /oxibeat/diastolic  float bpm    on every diastolic peak
+  /oxibeat/device     int 1 / 0    the oximeter connected / disconnected
 
 The bpm is the pulse rate at the moment of the mark (see rate.py). UDP has no
 connection: "connecting" resolves the host and opens a socket; nothing checks
@@ -42,6 +43,8 @@ class OscOutput:
         self.error: str | None = None
         self.wave = {"enabled": False}
         self.events = {kind: {"enabled": False} for kind in EVENT_KINDS}
+        self.device = {"enabled": False}
+        self._device_on = False
         self._last_wave: float | None = None
 
     def state(self) -> dict:
@@ -53,6 +56,7 @@ class OscOutput:
             "error": self.error,
             "wave": self.wave,
             "events": self.events,
+            "device": self.device,
         }
 
     def _address(self, name: str) -> str:
@@ -68,6 +72,7 @@ class OscOutput:
             self.error = None
             self._last_wave = None
             log.info("OSC output: %s:%d", self.host, self.port)
+            self._send_device_on()
         except (OSError, UnicodeError) as e:
             self.error = f"Can't send to {self.host}:{self.port}: {e}"
             log.warning("%s", self.error)
@@ -102,6 +107,10 @@ class OscOutput:
         if "enabled" in wave:
             self.wave["enabled"] = bool(wave["enabled"])
             self._last_wave = None
+        device = settings.get("device") or {}
+        if "enabled" in device:
+            self.device["enabled"] = bool(device["enabled"])
+            self._send_device_on()
         for kind, event in (settings.get("events") or {}).items():
             if kind in self.events and "enabled" in event:
                 self.events[kind]["enabled"] = bool(event["enabled"])
@@ -109,7 +118,7 @@ class OscOutput:
 
     # --- output --------------------------------------------------------------
 
-    def _send(self, address: str, value: float):
+    def _send(self, address: str, value: float | int):
         try:
             self._client.send_message(address, value)
         except OSError as e:
@@ -118,6 +127,17 @@ class OscOutput:
             self.error = f"OSC output failed: {e}"
             log.warning("%s", self.error)
             self._on_change()
+
+    def set_device_on(self, on: bool):
+        """The oximeter connected or disconnected; sent as 1 / 0 when it changes."""
+        if on != self._device_on:
+            self._device_on = on
+            self._send_device_on()
+
+    def _send_device_on(self):
+        """Sends the current device state, so a receiver that joins later (socket opened, message enabled) is in step."""
+        if self._client is not None and self.device["enabled"]:
+            self._send(self._address("device"), int(self._device_on))
 
     def send_wave(self, value: float):
         """The smoothed waveform (0..127); sent normalised to 0..1 when it changes."""

@@ -362,6 +362,8 @@ const midiEls = {
   channel: $("midi-channel"),
   ccEnabled: $("cc-enabled"),
   ccNumber: $("cc-number"),
+  deviceEnabled: $("device-enabled"),
+  deviceNumber: $("device-number"),
   notesHint: $("notes-hint"),
   velocityFixed: $("velocity-fixed"),
   velocityValue: $("velocity-value"),
@@ -385,7 +387,7 @@ function setValue(el, value) {
 function renderMidi() {
   const live = serverUp && midi;
   const connected = live && midi.port !== null;
-  for (const el of document.querySelectorAll(".menu-section [id^=midi-], .menu-section [id^=cc-], .note-row input")) {
+  for (const el of document.querySelectorAll(".menu-section [id^=midi-], .menu-section [id^=cc-], .menu-section [id^=device-], .note-row input")) {
     el.disabled = !live;
   }
   if (!midi) return;
@@ -405,6 +407,8 @@ function renderMidi() {
   setValue(midiEls.channel, midi.channel);
   midiEls.ccEnabled.checked = midi.cc.enabled;
   setValue(midiEls.ccNumber, midi.cc.number);
+  midiEls.deviceEnabled.checked = midi.device.enabled;
+  setValue(midiEls.deviceNumber, midi.device.number);
 
   // marks the current detector doesn't produce are shown but unavailable
   const kinds = detectors.find((d) => d.id === detection)?.kinds ?? [];
@@ -480,6 +484,11 @@ midiEls.ccNumber.addEventListener("change", () => {
   if (Number.isFinite(intValue(midiEls.ccNumber))) send({ type: "midi_set", cc: { number: intValue(midiEls.ccNumber) } });
   else renderMidi();
 });
+midiEls.deviceEnabled.addEventListener("change", () => send({ type: "midi_set", device: { enabled: midiEls.deviceEnabled.checked } }));
+midiEls.deviceNumber.addEventListener("change", () => {
+  if (Number.isFinite(intValue(midiEls.deviceNumber))) send({ type: "midi_set", device: { number: intValue(midiEls.deviceNumber) } });
+  else renderMidi();
+});
 midiEls.velocityFixed.addEventListener("change", () => send({ type: "midi_set", velocity: { fixed: midiEls.velocityFixed.checked } }));
 midiEls.velocityValue.addEventListener("change", () => {
   if (Number.isFinite(intValue(midiEls.velocityValue))) send({ type: "midi_set", velocity: { value: intValue(midiEls.velocityValue) } });
@@ -511,7 +520,7 @@ const oscEls = {
   prefix: $("osc-prefix"),
   rows: [...document.querySelectorAll(".osc-row")],
 };
-const OSC_NAMES = { wave: "data", systolic: "systolic", notch: "notch", diastolic: "diastolic" };
+const OSC_NAMES = { wave: "data", systolic: "systolic", notch: "notch", diastolic: "diastolic", device: "device" };
 let osc = null;
 
 function renderOsc() {
@@ -534,10 +543,10 @@ function renderOsc() {
   for (const row of oscEls.rows) {
     const key = row.dataset.osc;
     const check = row.querySelector("input");
-    const ok = key === "wave" || kinds.includes(key) || (key === "systolic" && kinds.includes("beat"));
+    const ok = key === "wave" || key === "device" || kinds.includes(key) || (key === "systolic" && kinds.includes("beat"));
     row.classList.toggle("unavailable", !ok);
     check.disabled = !live || !ok;
-    check.checked = key === "wave" ? osc.wave.enabled : osc.events[key].enabled;
+    check.checked = key === "wave" ? osc.wave.enabled : key === "device" ? osc.device.enabled : osc.events[key].enabled;
     const address = osc.prefix ? `/${osc.prefix}/${OSC_NAMES[key]}` : `/${OSC_NAMES[key]}`;
     const addressEl = row.querySelector(".osc-address");
     addressEl.textContent = addressEl.title = address;
@@ -565,8 +574,8 @@ for (const row of oscEls.rows) {
   const key = row.dataset.osc;
   const check = row.querySelector("input");
   check.addEventListener("change", () =>
-    send(key === "wave"
-      ? { type: "osc_set", wave: { enabled: check.checked } }
+    send(key === "wave" || key === "device"
+      ? { type: "osc_set", [key]: { enabled: check.checked } }
       : { type: "osc_set", events: { [key]: { enabled: check.checked } } }));
 }
 
@@ -596,12 +605,12 @@ function saveSettings(patch) {
 
 function syncSettings(msg) {
   if (restored) {
-    const { channel, cc, notes, velocity, length, clock } = msg.midi;
-    const { host, port, prefix, wave, events } = msg.osc;
+    const { channel, cc, device: midiDevice, notes, velocity, length, clock } = msg.midi;
+    const { host, port, prefix, wave, events, device: oscDevice } = msg.osc;
     saveSettings({
       detection: msg.detection,
-      midi: { channel, cc, notes, velocity, length, clock },
-      osc: { host, port, prefix, wave, events },
+      midi: { channel, cc, device: midiDevice, notes, velocity, length, clock },
+      osc: { host, port, prefix, wave, events, device: oscDevice },
     });
     return;
   }

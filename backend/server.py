@@ -4,11 +4,11 @@ WebSocket messages (JSON), server -> page:
   {"type": "status", "device": {"state", "name", "address"}, "running": bool,
    "detection": id, "detectors": [{"id", "label", "kinds": [kind, ...]}, ...],
    "midi": {"ports": [name, ...], "port": name or null, "error": str or null, "channel": 1..16,
-            "cc": {"enabled", "number"}, "notes": {kind: {"enabled", "note"}, ...},
+            "cc": {"enabled", "number"}, "device": {"enabled", "number"}, "notes": {kind: {"enabled", "note"}, ...},
             "velocity": {"fixed", "value"}, "length": "1/4" | "1/8" | "1/16" | "1/32",
             "clock": {"enabled", "auto", "sensitivity": 0..100, "fraction": "1/4" | "1/2"}},
    "osc": {"host", "port", "prefix", "connected": bool, "error": str or null,
-           "wave": {"enabled"}, "events": {kind: {"enabled"}, ...}}}
+           "wave": {"enabled"}, "events": {kind: {"enabled"}, ...}, "device": {"enabled"}}}
   {"type": "vitals", "spo2": int, "pr": int, "pi": float}
   {"type": "wave", "n": first sample's running number, "samples": [int, ...]}
   {"type": "marks", "marks": [[sample number, kind], ...]}  (may refer to samples already sent)
@@ -18,10 +18,10 @@ page -> server:
   {"type": "midi_refresh"}                       re-list the system's MIDI outputs
   {"type": "midi_connect", "port": name}
   {"type": "midi_disconnect"}
-  {"type": "midi_set", ...}                      any part of status.midi's channel / cc / notes / velocity / length / clock
+  {"type": "midi_set", ...}                      any part of status.midi's channel / cc / device / notes / velocity / length / clock
   {"type": "osc_connect"}                        start sending to status.osc's host and port
   {"type": "osc_disconnect"}
-  {"type": "osc_set", ...}                       any part of status.osc's host / port / prefix / wave / events
+  {"type": "osc_set", ...}                       any part of status.osc's host / port / prefix / wave / events / device
 """
 
 import asyncio
@@ -71,6 +71,8 @@ class Hub:
         self.detector.reset()
         if state["state"] != "connected":
             self._rate = None
+        self.midi.set_device_on(state["state"] == "connected")
+        self.osc.set_device_on(state["state"] == "connected")
         self._broadcast(self._status())
 
     def _on_vitals(self, v: Vitals):

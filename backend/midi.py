@@ -1,4 +1,4 @@
-"""MIDI output: the waveform as a control change, and a note per detected mark.
+"""MIDI output: the waveform as a control change, a note per detected mark, and the device's on/off state.
 
 Everything goes out on one channel. Settings live here and are shown to the
 pages through `state()`; `update()` takes the same shape (partially) back.
@@ -41,6 +41,8 @@ class MidiOutput:
         self.ports: list[str] = []
         self.channel = 1  # 1..16 as shown to the user
         self.cc = {"enabled": False, "number": 1}
+        self.device = {"enabled": False, "number": 2}  # CC 127 while the oximeter is connected, else 0
+        self._device_on = False
         self.notes = {kind: {"enabled": False, "note": note} for kind, note in zip(NOTE_KINDS, (36, 38, 42))}
         self.velocity = {"fixed": True, "value": 100}  # not fixed: velocity = pulse rate
         self.length = "1/16"
@@ -66,6 +68,7 @@ class MidiOutput:
             "error": self.error,
             "channel": self.channel,
             "cc": self.cc,
+            "device": self.device,
             "notes": self.notes,
             "velocity": self.velocity,
             "length": self.length,
@@ -90,6 +93,7 @@ class MidiOutput:
             self.error = None
             self._last_cc = None
             log.info("MIDI output: %s", name)
+            self._send_device_on()
         except Exception as e:
             self.error = f"Can't open {name}: {e}"
             log.warning("%s", self.error)
@@ -125,12 +129,20 @@ class MidiOutput:
             self.all_notes_off()
             self.channel = _clamp(settings["channel"], 1, 16, self.channel)
             self._last_cc = None
+            self._send_device_on()
         cc = settings.get("cc") or {}
         if "enabled" in cc:
             self.cc["enabled"] = bool(cc["enabled"])
         if "number" in cc:
             self.cc["number"] = _clamp(cc["number"], 0, 127, self.cc["number"])
             self._last_cc = None
+        device = settings.get("device") or {}
+        if "enabled" in device:
+            self.device["enabled"] = bool(device["enabled"])
+        if "number" in device:
+            self.device["number"] = _clamp(device["number"], 0, 127, self.device["number"])
+        if device:
+            self._send_device_on()
         velocity = settings.get("velocity") or {}
         if "fixed" in velocity:
             self.velocity["fixed"] = bool(velocity["fixed"])
@@ -183,6 +195,19 @@ class MidiOutput:
         self.error = f"MIDI output failed: {error}"
         log.warning("%s", self.error)
         self._on_change()
+
+    def set_device_on(self, on: bool):
+        """The oximeter connected or disconnected; sent as CC 127 / 0 when it changes."""
+        if on != self._device_on:
+            self._device_on = on
+            self._send_device_on()
+
+    def _send_device_on(self):
+        """Sends the current device state, so a receiver that joins later (port opened, CC enabled) is in step."""
+        if self._port is None or not self.device["enabled"]:
+            return
+        value = 127 if self._device_on else 0
+        self._send(mido.Message("control_change", channel=self.channel - 1, control=self.device["number"], value=value))
 
     def send_wave(self, value: float):
         """The smoothed waveform (0..127); sent as CC when it changes."""

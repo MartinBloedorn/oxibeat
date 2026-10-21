@@ -86,7 +86,12 @@
             <input type="number" id="cc-number" min="0" max="127" aria-label="Waveform CC number">
             <span class="note-name">CC</span>
           </div>
-          <span class="hint">Smoothed like the graph, about 0.4 s behind the device.</span>
+          <div class="note-row">
+            <label class="check"><input type="checkbox" id="device-enabled"> Device on</label>
+            <input type="number" id="device-number" min="0" max="127" aria-label="Device on CC number">
+            <span class="note-name">CC</span>
+          </div>
+          <span class="hint">Waveform is smoothed like the graph, about 0.4 s behind the device. Device on sends 127 when the oximeter connects and 0 when it disconnects.</span>
         </div>
 
         <div class="group">
@@ -167,7 +172,8 @@
           <label class="osc-row check" data-osc="systolic"><input type="checkbox"> Systolic peak <code class="osc-address"></code></label>
           <label class="osc-row check" data-osc="notch"><input type="checkbox"> Dicrotic notch <code class="osc-address"></code></label>
           <label class="osc-row check" data-osc="diastolic"><input type="checkbox"> Diastolic peak <code class="osc-address"></code></label>
-          <span class="hint">Waveform as a 0–1 float, smoothed like the graph. Peaks and the notch carry the pulse rate in bpm as a float.</span>
+          <label class="osc-row check" data-osc="device"><input type="checkbox"> Device on <code class="osc-address"></code></label>
+          <span class="hint">Waveform as a 0–1 float, smoothed like the graph. Peaks and the notch carry the pulse rate in bpm as a float. Device on is 1 when the oximeter connects and 0 when it disconnects.</span>
         </div>
       </section>
     </nav>
